@@ -1,4 +1,3 @@
-import argparse
 import os
 import platform
 import time
@@ -8,6 +7,9 @@ import cv2
 OUTPUT_DIR = "dataset/images"
 CAMERA_INDEX = 0
 MAX_IMAGES = 100
+CAMERA_BACKEND = "auto"
+HEADLESS_MODE = False
+SNAPSHOT_INTERVAL_SEC = 1.0
 
 TARGET_FPS = 60
 TARGET_FOURCC = "MJPG"
@@ -41,36 +43,6 @@ def choose_resolution():
         print("Invalid choice. Using default 1280x720.")
         choice = "2"
     return RESOLUTION_PRESETS[choice]
-
-
-def build_arg_parser():
-    parser = argparse.ArgumentParser(
-        description="Capture dataset images from a USB camera."
-    )
-    parser.add_argument(
-        "--camera-index",
-        type=int,
-        default=CAMERA_INDEX,
-        help=f"Camera index to open (default: {CAMERA_INDEX}).",
-    )
-    parser.add_argument(
-        "--backend",
-        choices=("auto", "dshow", "v4l2"),
-        default="auto",
-        help="Camera backend: auto, dshow (Windows), or v4l2 (Linux).",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=OUTPUT_DIR,
-        help=f"Directory for captured images (default: {OUTPUT_DIR}).",
-    )
-    parser.add_argument(
-        "--max-images",
-        type=int,
-        default=MAX_IMAGES,
-        help=f"Maximum number of images to save (default: {MAX_IMAGES}).",
-    )
-    return parser
 
 
 def get_backend_candidates(requested_backend):
@@ -155,22 +127,25 @@ def draw_reticle(frame):
     cv2.circle(frame, center, radius, (0, 0, 255), 1, cv2.LINE_AA)
 
 
+def can_use_preview():
+    return hasattr(cv2, "imshow") and bool(os.environ.get("DISPLAY"))
+
+
 def main():
-    args = build_arg_parser().parse_args()
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     target_width, target_height = choose_resolution()
-    print_runtime_info(args.camera_index, args.backend)
+    print_runtime_info(CAMERA_INDEX, CAMERA_BACKEND)
     cap, opened_backend = open_camera_fixed_mode(
-        args.camera_index,
+        CAMERA_INDEX,
         target_width,
         target_height,
-        args.backend,
+        CAMERA_BACKEND,
     )
     if cap is None:
         print(
-            f"Error: cannot open camera index {args.camera_index} "
-            f"with {BACKEND_LABELS.get(args.backend, args.backend.upper())} "
+            f"Error: cannot open camera index {CAMERA_INDEX} "
+            f"with {BACKEND_LABELS.get(CAMERA_BACKEND, CAMERA_BACKEND.upper())} "
             f"{target_width}x{target_height}@{TARGET_FPS} {TARGET_FOURCC}"
         )
         return
@@ -183,15 +158,21 @@ def main():
 
     print_mode_info(cap, opened_backend, frame, target_width, target_height)
     print("\nDataset capture started")
-    print("Press:")
-    print("  SPACE - take snapshot")
-    print("  ESC   - finish capture")
+    preview_enabled = not HEADLESS_MODE and can_use_preview()
+    if preview_enabled:
+        print("Press:")
+        print("  SPACE - take snapshot")
+        print("  ESC   - finish capture")
+    else:
+        print("Headless mode active")
+        print(f"  snapshot interval: {SNAPSHOT_INTERVAL_SEC:.2f} sec")
 
     count = 0
     current_fps = 0.0
     fps_frames = 0
     fps_started_at = time.perf_counter()
-    while count < args.max_images:
+    last_saved_at = 0.0
+    while count < MAX_IMAGES:
         ret, frame = cap.read()
         if not ret:
             print("Frame read error")
@@ -219,22 +200,33 @@ def main():
         )
         draw_reticle(preview_frame)
 
-        cv2.imshow("Data capture - SPACE: snapshot, ESC: exit", preview_frame)
-        key = cv2.waitKey(1) & 0xFF
+        if preview_enabled:
+            cv2.imshow("Data capture - SPACE: snapshot, ESC: exit", preview_frame)
+            key = cv2.waitKey(1) & 0xFF
 
-        if key == 27:
-            print(f"\nCapture finished. Saved {count} images.")
-            break
-        if key == 32:
-            filename = os.path.join(args.output_dir, f"object_{count:03d}.jpg")
+            if key == 27:
+                print(f"\nCapture finished. Saved {count} images.")
+                break
+            if key == 32:
+                filename = os.path.join(OUTPUT_DIR, f"object_{count:03d}.jpg")
+                cv2.imwrite(filename, frame)
+                print(f"Saved: {filename}")
+                count += 1
+                time.sleep(0.3)
+        else:
+            if now - last_saved_at < max(SNAPSHOT_INTERVAL_SEC, 0.0):
+                continue
+
+            filename = os.path.join(OUTPUT_DIR, f"object_{count:03d}.jpg")
             cv2.imwrite(filename, frame)
             print(f"Saved: {filename}")
             count += 1
-            time.sleep(0.3)
+            last_saved_at = now
 
     cap.release()
-    cv2.destroyAllWindows()
-    print(f"\nTotal saved: {count} images in {args.output_dir}")
+    if preview_enabled:
+        cv2.destroyAllWindows()
+    print(f"\nTotal saved: {count} images in {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":
