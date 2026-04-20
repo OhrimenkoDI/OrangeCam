@@ -2,6 +2,7 @@ import argparse
 import time
 from pathlib import Path
 
+
 import cv2
 import numpy as np
 from ultralytics import YOLO

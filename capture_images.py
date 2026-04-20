@@ -1,4 +1,6 @@
+import argparse
 import os
+import platform
 import time
 
 import cv2
@@ -15,6 +17,11 @@ RESOLUTION_PRESETS = {
     "3": (640, 480),
 }
 RETICLE_DIAMETER_PX = 15
+BACKEND_LABELS = {
+    "auto": "AUTO",
+    "dshow": "DSHOW",
+    "v4l2": "V4L2",
+}
 
 
 def fourcc_to_str(value):
@@ -36,7 +43,50 @@ def choose_resolution():
     return RESOLUTION_PRESETS[choice]
 
 
-def open_camera_fixed_mode(target_width, target_height):
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Capture dataset images from a USB camera."
+    )
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        default=CAMERA_INDEX,
+        help=f"Camera index to open (default: {CAMERA_INDEX}).",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "dshow", "v4l2"),
+        default="auto",
+        help="Camera backend: auto, dshow (Windows), or v4l2 (Linux).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=OUTPUT_DIR,
+        help=f"Directory for captured images (default: {OUTPUT_DIR}).",
+    )
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        default=MAX_IMAGES,
+        help=f"Maximum number of images to save (default: {MAX_IMAGES}).",
+    )
+    return parser
+
+
+def get_backend_candidates(requested_backend):
+    if requested_backend != "auto":
+        return [requested_backend]
+
+    system_name = platform.system().lower()
+    if system_name == "windows":
+        return ["dshow", "auto"]
+    if system_name == "linux":
+        return ["v4l2", "auto"]
+    return ["auto"]
+
+
+def open_camera_fixed_mode(camera_index, target_width, target_height, requested_backend):
+    backend_candidates = get_backend_candidates(requested_backend)
     params = [
         cv2.CAP_PROP_FOURCC,
         cv2.VideoWriter_fourcc(*TARGET_FOURCC),
@@ -49,16 +99,36 @@ def open_camera_fixed_mode(target_width, target_height):
         cv2.CAP_PROP_BUFFERSIZE,
         1,
     ]
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW, params)
+    backend_map = {
+        "auto": cv2.CAP_ANY,
+        "dshow": cv2.CAP_DSHOW,
+        "v4l2": cv2.CAP_V4L2,
+    }
+
+    for backend_name in backend_candidates:
+        cap = cv2.VideoCapture(camera_index, backend_map[backend_name], params)
+        if not cap.isOpened():
+            cap.release()
+            continue
+
+        for _ in range(10):
+            cap.read()
+        return cap, backend_name
+
+    return None, backend_candidates[0]
+
+
+def print_runtime_info(camera_index, backend_name):
+    print("Capture settings:")
+    print(f"  camera index: {camera_index}")
+    print(f"  backend     : {BACKEND_LABELS.get(backend_name, backend_name.upper())}")
+
+
+def print_mode_info(cap, backend_name, first_frame, target_width, target_height):
+    backend_label = BACKEND_LABELS.get(backend_name, backend_name.upper())
     if not cap.isOpened():
-        return None
+        return
 
-    for _ in range(10):
-        cap.read()
-    return cap
-
-
-def print_mode_info(cap, first_frame, target_width, target_height):
     reported_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     reported_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     reported_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -74,7 +144,7 @@ def print_mode_info(cap, first_frame, target_width, target_height):
     )
     print(
         f"  actual : {actual_width}x{actual_height}, "
-        f"fps={reported_fps:.2f}, fourcc={reported_fourcc}"
+        f"fps={reported_fps:.2f}, fourcc={reported_fourcc}, backend={backend_label}"
     )
 
 
@@ -86,14 +156,22 @@ def draw_reticle(frame):
 
 
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    args = build_arg_parser().parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
 
     target_width, target_height = choose_resolution()
-    cap = open_camera_fixed_mode(target_width, target_height)
+    print_runtime_info(args.camera_index, args.backend)
+    cap, opened_backend = open_camera_fixed_mode(
+        args.camera_index,
+        target_width,
+        target_height,
+        args.backend,
+    )
     if cap is None:
         print(
-            f"Error: cannot open camera index {CAMERA_INDEX} "
-            f"with DSHOW {target_width}x{target_height}@{TARGET_FPS} {TARGET_FOURCC}"
+            f"Error: cannot open camera index {args.camera_index} "
+            f"with {BACKEND_LABELS.get(args.backend, args.backend.upper())} "
+            f"{target_width}x{target_height}@{TARGET_FPS} {TARGET_FOURCC}"
         )
         return
 
@@ -103,7 +181,7 @@ def main():
         cap.release()
         return
 
-    print_mode_info(cap, frame, target_width, target_height)
+    print_mode_info(cap, opened_backend, frame, target_width, target_height)
     print("\nDataset capture started")
     print("Press:")
     print("  SPACE - take snapshot")
@@ -113,7 +191,7 @@ def main():
     current_fps = 0.0
     fps_frames = 0
     fps_started_at = time.perf_counter()
-    while count < MAX_IMAGES:
+    while count < args.max_images:
         ret, frame = cap.read()
         if not ret:
             print("Frame read error")
@@ -148,7 +226,7 @@ def main():
             print(f"\nCapture finished. Saved {count} images.")
             break
         if key == 32:
-            filename = os.path.join(OUTPUT_DIR, f"object_{count:03d}.jpg")
+            filename = os.path.join(args.output_dir, f"object_{count:03d}.jpg")
             cv2.imwrite(filename, frame)
             print(f"Saved: {filename}")
             count += 1
@@ -156,7 +234,7 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
-    print(f"\nTotal saved: {count} images in {OUTPUT_DIR}")
+    print(f"\nTotal saved: {count} images in {args.output_dir}")
 
 
 if __name__ == "__main__":
