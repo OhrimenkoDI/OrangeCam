@@ -5,19 +5,18 @@ import time
 import cv2
 
 OUTPUT_DIR = "dataset/images"
-CAMERA_INDEX = 0
+CAMERA_NAME = "RYS HFR USB2.0 Camera"
+CAMERA_SOURCE = "/dev/v4l/by-id/usb-RYS_HFR_USB2.0_Camera_RYS_HFR_USB2.0_Camera-video-index0"
+CAMERA_METADATA_SOURCE = "/dev/v4l/by-id/usb-RYS_HFR_USB2.0_Camera_RYS_HFR_USB2.0_Camera-video-index1"
 MAX_IMAGES = 100
-CAMERA_BACKEND = "auto"
+CAMERA_BACKEND = "v4l2"
 HEADLESS_MODE = False
 SNAPSHOT_INTERVAL_SEC = 1.0
 
-TARGET_FPS = 60
+TARGET_WIDTH = 1280
+TARGET_HEIGHT = 720
+TARGET_FPS = 120
 TARGET_FOURCC = "MJPG"
-RESOLUTION_PRESETS = {
-    "1": (1920, 1080),
-    "2": (1280, 720),
-    "3": (640, 480),
-}
 RETICLE_DIAMETER_PX = 15
 BACKEND_LABELS = {
     "auto": "AUTO",
@@ -33,18 +32,6 @@ def fourcc_to_str(value):
     return "".join(chr((code >> (8 * i)) & 0xFF) for i in range(4))
 
 
-def choose_resolution():
-    print("Select resolution preset:")
-    print("  1 - 1920x1080")
-    print("  2 - 1280x720")
-    print("  3 - 640x480")
-    choice = input("Enter 1/2/3 [2]: ").strip() or "2"
-    if choice not in RESOLUTION_PRESETS:
-        print("Invalid choice. Using default 1280x720.")
-        choice = "2"
-    return RESOLUTION_PRESETS[choice]
-
-
 def get_backend_candidates(requested_backend):
     if requested_backend != "auto":
         return [requested_backend]
@@ -57,7 +44,7 @@ def get_backend_candidates(requested_backend):
     return ["auto"]
 
 
-def open_camera_fixed_mode(camera_index, target_width, target_height, requested_backend):
+def open_camera_fixed_mode(camera_source, target_width, target_height, requested_backend):
     backend_candidates = get_backend_candidates(requested_backend)
     params = [
         cv2.CAP_PROP_FOURCC,
@@ -78,7 +65,7 @@ def open_camera_fixed_mode(camera_index, target_width, target_height, requested_
     }
 
     for backend_name in backend_candidates:
-        cap = cv2.VideoCapture(camera_index, backend_map[backend_name], params)
+        cap = cv2.VideoCapture(camera_source, backend_map[backend_name], params)
         if not cap.isOpened():
             cap.release()
             continue
@@ -90,9 +77,11 @@ def open_camera_fixed_mode(camera_index, target_width, target_height, requested_
     return None, backend_candidates[0]
 
 
-def print_runtime_info(camera_index, backend_name):
+def print_runtime_info(camera_source, backend_name):
     print("Capture settings:")
-    print(f"  camera index: {camera_index}")
+    print(f"  camera name : {CAMERA_NAME}")
+    print(f"  source      : {camera_source}")
+    print(f"  metadata    : {CAMERA_METADATA_SOURCE}")
     print(f"  backend     : {BACKEND_LABELS.get(backend_name, backend_name.upper())}")
 
 
@@ -134,17 +123,17 @@ def can_use_preview():
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    target_width, target_height = choose_resolution()
-    print_runtime_info(CAMERA_INDEX, CAMERA_BACKEND)
+    target_width, target_height = TARGET_WIDTH, TARGET_HEIGHT
+    print_runtime_info(CAMERA_SOURCE, CAMERA_BACKEND)
     cap, opened_backend = open_camera_fixed_mode(
-        CAMERA_INDEX,
+        CAMERA_SOURCE,
         target_width,
         target_height,
         CAMERA_BACKEND,
     )
     if cap is None:
         print(
-            f"Error: cannot open camera index {CAMERA_INDEX} "
+            f"Error: cannot open camera source {CAMERA_SOURCE} "
             f"with {BACKEND_LABELS.get(CAMERA_BACKEND, CAMERA_BACKEND.upper())} "
             f"{target_width}x{target_height}@{TARGET_FPS} {TARGET_FOURCC}"
         )
